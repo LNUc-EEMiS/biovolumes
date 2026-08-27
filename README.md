@@ -26,6 +26,26 @@ replaying for a join).
 `biovolume_pipeline.R` replays that log forward from a given starting
 edition to bring an older file's identifiers up to date before joining.
 
+## Prerequisites
+
+- **R** (developed against 4.6.1 — any reasonably recent R should work) and,
+  recommended, **RStudio**.
+- Open `biovolumes.Rproj` in RStudio (double-click it, or File → Open
+  Project) rather than opening `biovolume_pipeline.R` directly — this sets
+  the working directory to the project folder automatically, which the
+  script depends on for its relative paths like `data/PEG_BVOL2026.xlsx`. If
+  you open the script on its own instead and see a "cannot open file" /
+  "No such file or directory" error, that's the working directory not being
+  set to this folder — run `setwd()` to it, or reopen via the `.Rproj`.
+- Four packages, installed once per machine:
+
+  ```r
+  install.packages(c("readxl", "dplyr", "tidyr", "stringr"))
+  ```
+
+  The script also checks for these itself when run and will tell you exactly
+  which are missing if any aren't installed yet.
+
 ## Usage
 
 ```r

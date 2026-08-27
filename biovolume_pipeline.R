@@ -21,6 +21,18 @@
 # HELCOM geometry/volume/carbon-per-counting-unit columns she'll do that
 # calculation herself -- this script stops at producing that joined table.
 
+# Requires the readxl/dplyr/tidyr/stringr packages -- see README.md
+# "Prerequisites" for the one-line install command.
+required_packages <- c("readxl", "dplyr", "tidyr", "stringr")
+missing_packages <- setdiff(required_packages, rownames(installed.packages()))
+if (length(missing_packages) > 0) {
+  stop(
+    "Missing required package(s): ", paste(missing_packages, collapse = ", "),
+    "\nInstall with: install.packages(c(",
+    paste(sprintf('"%s"', missing_packages), collapse = ", "), "))"
+  )
+}
+
 library(readxl)
 library(dplyr)
 library(tidyr)
