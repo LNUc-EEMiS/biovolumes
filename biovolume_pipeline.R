@@ -80,6 +80,13 @@ read_biovolume_file <- function(path) {
 #' (new species/taxa) and attribute-only edits (Division/Class/Order/Author/
 #' Geometric_shape/Unit/... corrections that don't touch identity) are
 #' dropped here since they don't affect a (Species, SizeClassNo) join key.
+#' A handful of rows populate `invalid_sizeclass` (with the row's own
+#' current, unchanged size class) purely to flag which row an attribute-only
+#' edit like a Geometric_shape/formula change applies to -- these have no
+#' `valid_species`/`valid_sizeclass` replacement at all and are dropped too,
+#' since treating them as a rename event is a self-loop: the "old" and "new"
+#' identifier are the same, so it would match and "fire" forever. Confirmed
+#' via a real non-convergent remap on Nitzschia/5 (see README).
 #' NOTE: this only catches changes recorded in these structured columns --
 #' a handful of historical fixes are logged only as free-text `Comment`
 #' (e.g. a 2020 "Lingulodinium polyedrum" -> "Lingulodinium polyedra"
@@ -102,6 +109,7 @@ read_change_log <- function(path) {
     ) %>%
     filter(!is.na(Year), Version != "Information") %>%
     filter(!is.na(invalid_species) | !is.na(invalid_sizeclass)) %>%
+    filter(!is.na(valid_species) | !is.na(valid_sizeclass)) %>%
     distinct() %>%
     arrange(Year)
 }
@@ -184,13 +192,20 @@ remap_species_sizeclass <- function(species, sizeclass, change_log) {
 join_lmo_to_peg_bvol <- function(lmo, biovolume_file, change_log) {
   remapped <- remap_species_sizeclass(lmo$Species, lmo$SizeClassNo, change_log)
 
+  # An explicit match marker, rather than checking a reference column like
+  # Genus for NA: a handful of legitimate reference rows are class-level
+  # catch-alls (e.g. "Chlorophyceae") with no Genus of their own, which a
+  # Genus-based check would wrongly flag as unmatched.
+  biovolume_file <- biovolume_file %>% mutate(.matched = TRUE)
+
   lmo %>%
     bind_cols(remapped) %>%
     left_join(
       biovolume_file,
       by = c("Species_remapped" = "Species", "SizeClassNo_remapped" = "SizeClassNo")
     ) %>%
-    mutate(needs_manual_review = is.na(Genus))
+    mutate(needs_manual_review = is.na(.matched)) %>%
+    select(-.matched)
 }
 
 # =========================================================================
@@ -220,12 +235,16 @@ if (sys.nframe() == 0) {
   cat(sprintf("Loaded %d reference rows, %d identifier-change events.\n",
               nrow(biovolume_file), nrow(change_log)))
 
-  # How much does a *direct* join (no remap) already miss?
+  # How much does a *direct* join (no remap) already miss? (.matched, not
+  # Genus, since a few legitimate reference rows are genus-less catch-alls.)
   direct <- lmo_raw %>%
-    left_join(biovolume_file, by = c("Species" = "Species", "SizeClassNo" = "SizeClassNo"))
+    left_join(
+      biovolume_file %>% mutate(.matched = TRUE),
+      by = c("Species" = "Species", "SizeClassNo" = "SizeClassNo")
+    )
   cat(sprintf(
     "Direct join (no remap) against current PEG_BVOL2026: %d/%d rows unmatched.\n",
-    sum(is.na(direct$Genus)),
+    sum(is.na(direct$.matched)),
     nrow(direct)
   ))
 

@@ -19,11 +19,17 @@ SizeClassNo)` silently drops every row whose identifier has since changed.
 `PEG_BVOL2026.xlsx` ships a `Change log` sheet that records these
 renames/renumberings in structured columns (`Invalid species name`, `Valid
 species name`, `Invalid size class`, `Valid size class`) back to 2006 —
-343 identifier-changing events out of ~10,200 change-log rows in total (most
+333 identifier-changing events out of ~10,200 change-log rows in total (most
 of the rest are attribute-only edits — Division/Class/Order reclassification,
 author, geometric shape, unit — that don't touch identity and don't need
-replaying for a join; of the 343, 25 are distinct species renames, which
-matches Carolin's own manual count of the change log exactly).
+replaying for a join; of the 333, 25 are distinct species renames, which
+matches Carolin's own manual count of the change log exactly). 10 further
+rows populate `Invalid size class` with the row's own *current* (unchanged)
+size class purely to flag which row an attribute-only edit applies to — no
+actual `Valid species name`/`Valid size class` is given, so these are
+excluded too (see "Known limitations": a first version of this script
+treated them as real rename events, which caused a genuine non-terminating
+loop on real data).
 
 We call bringing an older file's identifiers up to date "**remapping**":
 `biovolume_pipeline.R` walks the change log in date order and rewrites each
@@ -114,6 +120,17 @@ demo at the bottom against `data/LMO_378.xlsx` — see caveat below.
   Polish lab used (possibly a PEG_BVOL subset) is missing the
   heterotrophic size classes for some genera — also a manual, case-by-case
   fix, also flagged via `needs_manual_review`.
+- **The change log itself has at least one gap**: in `PEG_BVOL2021`,
+  "Scrippsiella" size classes 1–3 were renamed to "Scrippsiella GRP" and
+  4–11 to "Apocalathium CPX". But PEG_BVOL2026's own reference table doesn't
+  use either of those `GRP`/`CPX`-suffixed names — it has plain
+  "Scrippsiella" (size classes 12–14) and plain "Apocalathium" (1–11), and
+  no later change-log row records that second rename. So replaying the log
+  lands on an identifier ("Scrippsiella GRP"/"Apocalathium CPX") that
+  doesn't exist in PEG_BVOL2026 either — flagged via `needs_manual_review`,
+  same as any other unresolved row, but worth knowing this one isn't
+  fixable by better code; the log is genuinely missing a step. Found while
+  validating against Emil's data file (see below).
 
 ## `data/LMO_378.xlsx` is genuine raw input
 
@@ -126,6 +143,28 @@ this commit: 33/35 distinct species+size-class rows resolve against
 PEG_BVOL2026 after remapping (32/35 without it) — the 2 remaining failures
 are the Katodinium/Leubordinium and bare-genus-Gymnodinium cases above.
 
+## `data/LMO_Phytoplankton_20210712_EF_CP.xlsx` — Emil's validation data
+
+Carolin doesn't have Emil's old change-log code, but sent this: all LMO
+phytoplankton counts up to mid-2021, with his own PEG_BVOL_2018- and
+PEG_BVOL_2020-adjusted volume/carbon columns already calculated (columns
+`CalcBiovol_um3_2020`, `CalcCarbon_pg_unit_2020`, etc.). 132 LMO occasions,
+46,515 rows, 629 distinct (Species, SizeClassNo) combinations — much larger
+and more diverse than `LMO_378.xlsx` alone, and it's what surfaced both bugs
+described under "Known limitations" above (the non-converging remap and the
+`Scrippsiella`/`Apocalathium` change-log gap).
+
+Remapping its 629 distinct (Species, SizeClassNo) pairs (already on
+PEG_BVOL_2020 nomenclature) forward to PEG_BVOL2026: 619/629 (98%) resolve
+after remapping (572/629 without it) — the 10 remaining are all the
+Scrippsiella/Apocalathium gap above. As a sanity check, for the 572 pairs
+whose identifier didn't change at all between 2020 and 2026, this repo's
+`Calculated_volume_µm3/counting_unit` mostly agrees closely with Emil's
+`CalcBiovol_um3_2020` (median ratio 1.00); 22 of the 572 differ by more than
+1%, which looks like genuine formula/dimension revisions recorded in the
+change log's `Comment` column (e.g. a geometric-shape/formula change) rather
+than a join problem.
+
 ## Open questions for Carolin
 
 1. ~~A genuine raw (pre-join) LMO count file~~ — resolved: `LMO_378.xlsx`'s
@@ -135,13 +174,14 @@ are the Katodinium/Leubordinium and bare-genus-Gymnodinium cases above.
    renames are backwards-compatible, replaying the full change log is
    always safe regardless of the file's original vintage (see "The problem
    this solves" above). `from_year` has been removed from the script.
-3. **Emil's old data file, once it arrives** — Carolin doesn't have his
-   code, but does have a file with all LMO phytoplankton data adjusted to
-   PEG_BVOL_2020, which she's attempting to send. Once here, worth checking
-   whether it's useful as a second, independent validation set (e.g. do our
-   remap results for the same occasions agree with what he produced
-   manually) rather than as a source of additional changelog logic — the
-   change log already goes back to 2006 in structured form.
+3. ~~Emil's old data file~~ — received (`data/LMO_Phytoplankton_20210712_EF_CP.xlsx`)
+   and used as a second, much larger validation set (see above) — no
+   further code from Emil exists, and PEG_BVOL2026's own change log already
+   covers this period, so nothing further is needed here.
 4. Confirmed resolved, no open question remains: names PEG_BVOL hasn't
    adopted, and bare-genus rows with missing size classes, both get flagged
    for manual review rather than auto-resolved (see "Known limitations").
+5. **The Scrippsiella/Apocalathium change-log gap** (see "Known
+   limitations") — is there somewhere to check what the *current* correct
+   mapping should be (WORMS, as Carolin does for unadopted names), or is
+   this also just a manual, case-by-case fix?
