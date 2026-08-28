@@ -7,14 +7,23 @@
 # whose identifiers have since changed (e.g. Lingulodinium polyedra ->
 # Lingulaulax polyedra). PEG_BVOL2026.xlsx ships a "Change log" sheet that
 # records these renames/renumberings in structured columns back to 2006; this
-# script replays that log to bring an older count file's identifiers forward
-# to the current edition before joining.
+# script replays ("remaps") that log to bring an older count file's
+# identifiers forward to the current edition before joining.
 #
-# STATUS: work in progress, see README.md "Open questions". We don't yet have
-# a genuine raw (pre-join) LMO count file to validate against -- data/LMO_378.xlsx
-# is an example of the *target* output shape but with outdated reference
-# numbers, so the demo at the bottom of this script uses it only to exercise
-# the remap+join logic, not as a real input.
+# Per Carolin (email 2026-08-28), HELCOM's renames are backwards-compatible:
+# when a species/size-class is split off into a new identifier, the old
+# identifier is never reused for anything else. That means replaying the
+# *entire* change log against any LMO file is always safe, regardless of
+# which PEG_BVOL edition it was originally coded against -- if the file
+# already uses the current identifier, no change-log row's "invalid" name
+# will match it, so nothing changes. This is why there's no `from_year`
+# parameter here: the whole log is always applied.
+#
+# data/LMO_378.xlsx is confirmed (Carolin, 2026-08-28) to be genuine raw
+# output from the Polish lab: its Species/SizeClassNo/Abundance columns are
+# real counts, not a demo. It also carries Biovolume/Carbon-biomass columns
+# the lab pre-computed against an older PEG_BVOL edition -- those are simply
+# omitted on import (see the demo below), not something to validate against.
 #
 # Deliberately out of scope here: computing final biovolume/carbon biomass
 # from abundance. Per Carolin's email, once she has abundance joined to the
@@ -99,20 +108,19 @@ read_change_log <- function(path) {
 
 # ---- 2. Remap engine ---------------------------------------------------
 
-#' Replay the change log against one (species, size class) pair, walking
-#' forward in chronological (Year) order, until nothing more applies.
-#'
-#' `from_year` is the PEG_BVOL edition the original count was coded against;
-#' only changes strictly after it are replayed. Guards against runaway loops
-#' (there shouldn't be any, but a cycle would otherwise hang silently).
-remap_one <- function(species, sizeclass, from_year, change_log) {
-  applicable <- change_log %>% filter(Year > from_year)
+#' Replay the *entire* change log against one (species, size class) pair,
+#' walking forward in chronological (Year) order, until nothing more
+#' applies. Safe to run regardless of which PEG_BVOL edition the pair
+#' originated from -- see the backward-compatibility note at the top of this
+#' file. Guards against runaway loops (there shouldn't be any, but a cycle
+#' would otherwise hang silently).
+remap_one <- function(species, sizeclass, change_log) {
   cur_species <- species
   cur_sizeclass <- sizeclass
   n_steps <- 0
 
   repeat {
-    hit <- applicable %>%
+    hit <- change_log %>%
       filter(
         (!is.na(invalid_species) & invalid_species == cur_species &
            (is.na(invalid_sizeclass) | invalid_sizeclass == cur_sizeclass)) |
@@ -140,21 +148,21 @@ remap_one <- function(species, sizeclass, from_year, change_log) {
 }
 
 #' Vectorised/memoised remap over a whole count file: distinct (species,
-#' sizeclass, from_year) triples are remapped once and joined back, since a
-#' typical LMO file has many rows sharing the same identifier.
-remap_species_sizeclass <- function(species, sizeclass, from_year, change_log) {
-  keys <- tibble(species, sizeclass, from_year) %>%
+#' sizeclass) pairs are remapped once and joined back, since a typical LMO
+#' file has many rows sharing the same identifier.
+remap_species_sizeclass <- function(species, sizeclass, change_log) {
+  keys <- tibble(species, sizeclass) %>%
     mutate(.row = row_number())
 
-  distinct_keys <- keys %>% distinct(species, sizeclass, from_year)
+  distinct_keys <- keys %>% distinct(species, sizeclass)
 
   remapped <- distinct_keys %>%
     rowwise() %>%
-    mutate(remap_one(species, sizeclass, from_year, change_log)) %>%
+    mutate(remap_one(species, sizeclass, change_log)) %>%
     ungroup()
 
   keys %>%
-    left_join(remapped, by = c("species", "sizeclass", "from_year")) %>%
+    left_join(remapped, by = c("species", "sizeclass")) %>%
     arrange(.row) %>%
     select(Species_remapped, SizeClassNo_remapped, n_remap_steps)
 }
@@ -165,30 +173,35 @@ remap_species_sizeclass <- function(species, sizeclass, from_year, change_log) {
 #' edition, then join in the geometry/volume/carbon reference columns.
 #'
 #' `lmo` must have Species and SizeClassNo columns identifying what was
-#' counted, plus whatever abundance column(s) the lab provides.
-#' `from_year` is the PEG_BVOL edition year the LMO occasion was originally
-#' coded against (a single year applied to every row, or a same-length
-#' vector if it varies row to row).
-join_lmo_to_peg_bvol <- function(lmo, from_year, biovolume_file, change_log) {
-  remapped <- remap_species_sizeclass(
-    lmo$Species, lmo$SizeClassNo, from_year, change_log
-  )
+#' counted, plus whatever abundance column(s) the lab provides. The full
+#' change log is always replayed (see the note at the top of this file for
+#' why that's safe regardless of the file's original PEG_BVOL vintage).
+#'
+#' Adds a `needs_manual_review` column: TRUE where no match was found even
+#' after remapping (e.g. a name PEG_BVOL never adopted, or a size class
+#' missing from whatever reference the lab used) -- these need a manual
+#' look, same as Carolin already does for cases like this.
+join_lmo_to_peg_bvol <- function(lmo, biovolume_file, change_log) {
+  remapped <- remap_species_sizeclass(lmo$Species, lmo$SizeClassNo, change_log)
 
   lmo %>%
     bind_cols(remapped) %>%
     left_join(
       biovolume_file,
       by = c("Species_remapped" = "Species", "SizeClassNo_remapped" = "SizeClassNo")
-    )
+    ) %>%
+    mutate(needs_manual_review = is.na(Genus))
 }
 
 # =========================================================================
 # Demo: exercise the remap + join logic against data/LMO_378.xlsx.
 #
-# This is NOT a real pipeline run -- LMO_378.xlsx is an already-joined
-# example with outdated numbers (see README), so its Species/SizeClassNo
-# columns are used here only as a stand-in "raw" input, and the resulting
-# joined columns are not compared against its own (outdated) values.
+# LMO_378.xlsx is genuine raw output from the Polish lab (Carolin, 2026-08-28):
+# its Species/SizeClassNo/Abundance columns are real counts. It also carries
+# Biovolume/Carbon-biomass columns the lab pre-computed against an older
+# PEG_BVOL edition -- those are dropped on import below and not used for
+# anything (not even comparison), since recomputing them from the current
+# reference is the whole point of this pipeline.
 # =========================================================================
 
 if (sys.nframe() == 0) {
@@ -216,19 +229,17 @@ if (sys.nframe() == 0) {
     nrow(direct)
   ))
 
-  # Worst-case assumption: this occasion was coded against the oldest edition
-  # the change log covers (2006), so remap everything forward from there.
-  joined <- join_lmo_to_peg_bvol(lmo_raw, from_year = 2006, biovolume_file, change_log)
+  joined <- join_lmo_to_peg_bvol(lmo_raw, biovolume_file, change_log)
 
   cat(sprintf(
-    "After remap (assuming from_year = 2006): %d/%d rows unmatched.\n",
-    sum(is.na(joined$Genus)), nrow(joined)
+    "After remap: %d/%d rows unmatched (needs_manual_review).\n",
+    sum(joined$needs_manual_review), nrow(joined)
   ))
 
-  unmatched <- joined %>% filter(is.na(Genus)) %>%
+  unmatched <- joined %>% filter(needs_manual_review) %>%
     distinct(Species, SizeClassNo, Species_remapped, SizeClassNo_remapped)
   if (nrow(unmatched) > 0) {
-    cat("Still-unmatched species/size classes after remap:\n")
+    cat("Still-unmatched species/size classes after remap -- flag for manual review:\n")
     print(unmatched)
   }
 

@@ -22,9 +22,23 @@ species name`, `Invalid size class`, `Valid size class`) back to 2006 —
 343 identifier-changing events out of ~10,200 change-log rows in total (most
 of the rest are attribute-only edits — Division/Class/Order reclassification,
 author, geometric shape, unit — that don't touch identity and don't need
-replaying for a join).
-`biovolume_pipeline.R` replays that log forward from a given starting
-edition to bring an older file's identifiers up to date before joining.
+replaying for a join; of the 343, 25 are distinct species renames, which
+matches Carolin's own manual count of the change log exactly).
+
+We call bringing an older file's identifiers up to date "**remapping**":
+`biovolume_pipeline.R` walks the change log in date order and rewrites each
+old species/size-class pair to whatever HELCOM calls it today, *before*
+looking up the volume/carbon numbers — otherwise the lookup would silently
+fail for anything renamed since the count was made.
+
+Per Carolin, HELCOM's renames are backwards-compatible: once a species/size
+class is split off into a new identifier, the old identifier is never reused
+for anything else. That means it's always safe to replay the *entire* change
+log against a count file, regardless of which PEG_BVOL edition it was
+originally recorded against — if it already uses a current identifier,
+nothing in the log will match it, so nothing changes. So, unlike an earlier
+version of this script, there's no need to know or supply which edition an
+LMO occasion was originally coded against.
 
 ## Prerequisites
 
@@ -54,16 +68,21 @@ biovolume_file <- read_biovolume_file("data/PEG_BVOL2026.xlsx")
 change_log <- read_change_log("data/PEG_BVOL2026.xlsx")
 
 joined <- join_lmo_to_peg_bvol(
-  lmo,                # data frame with Species, SizeClassNo, and abundance column(s)
-  from_year = 2015,   # PEG_BVOL edition year this occasion was originally coded against
+  lmo,   # data frame with Species, SizeClassNo, and abundance column(s)
   biovolume_file,
   change_log
 )
 ```
 
+`lmo`'s `Species`/`SizeClassNo` columns should be exactly what the lab
+reported — if the file also has pre-computed Biovolume/Carbon-biomass
+columns from the lab (like `LMO_378.xlsx` does), just don't select them into
+`lmo`; they're not needed and shouldn't be compared against.
+
 `joined` has one row per input row, with the current-edition geometry/volume/
-carbon-per-counting-unit columns attached. Rows where `Genus` is `NA` didn't
-match even after remapping — inspect those manually.
+carbon-per-counting-unit columns attached, plus a `needs_manual_review`
+column: `TRUE` where nothing matched even after remapping (e.g. a name
+PEG_BVOL never adopted) — inspect those rows by hand.
 
 Deliberately out of scope: computing final biovolume/carbon biomass from
 abundance. Per Carolin's email, once abundance is joined to the HELCOM
@@ -85,35 +104,44 @@ demo at the bottom against `data/LMO_378.xlsx` — see caveat below.
 - **Names HELCOM hasn't adopted aren't resolvable at all.** E.g.
   `data/LMO_378.xlsx` uses "Leubordinium glaucum", but PEG_BVOL2026 still
   calls it "Katodinium glaucum" — no amount of replaying HELCOM's own change
-  log fixes a name PEG_BVOL never adopted in the first place. These need a
-  manual mapping.
+  log fixes a name PEG_BVOL never adopted in the first place. Confirmed by
+  Carolin: these need a manual mapping, found case by case (e.g. via WORMS)
+  as they come up — flagged in `joined` via `needs_manual_review = TRUE`,
+  same as any other unresolved row.
+- **A bare genus with no size class won't match**, e.g. `LMO_378.xlsx` has
+  "Gymnodinium" rows with `SizeClassNo` blank (only distinguished by
+  Trophy). Confirmed by Carolin: this happens because whatever reference the
+  Polish lab used (possibly a PEG_BVOL subset) is missing the
+  heterotrophic size classes for some genera — also a manual, case-by-case
+  fix, also flagged via `needs_manual_review`.
 
-## `data/LMO_378.xlsx` is a demo fixture, not real input
+## `data/LMO_378.xlsx` is genuine raw input
 
-It's Carolin's example of the *target output shape*, but per her the
-reference numbers in it (volume/carbon/biovolume/biomass) are outdated — it
-already has those columns computed against some old PEG_BVOL edition. The
-demo strips them back out and uses only its `Species`/`SizeClassNo`/
-`Abundance` columns as a stand-in raw input, to exercise the remap+join
-logic end to end; it is not a validated real run. Result as of this commit:
-33/35 distinct species+size-class rows resolve against PEG_BVOL2026 after
-remapping (32/35 without it) — the 2 remaining failures are the
-Katodinium/Leubordinium case above and a bare-genus "Gymnodinium" row with no
-`SizeClassNo` in the source file.
+Confirmed by Carolin (2026-08-28): its `Species`/`SizeClassNo`/`Abundance`
+columns are exactly what the Polish lab sends, before any HELCOM join. It
+also carries Biovolume/Carbon-biomass columns the lab pre-computed against
+an older PEG_BVOL edition — the demo (and any real usage) just omits those
+on import; they're not compared against or otherwise used. Result as of
+this commit: 33/35 distinct species+size-class rows resolve against
+PEG_BVOL2026 after remapping (32/35 without it) — the 2 remaining failures
+are the Katodinium/Leubordinium and bare-genus-Gymnodinium cases above.
 
 ## Open questions for Carolin
 
-1. **A genuine raw (pre-join) LMO count file.** `LMO_378.xlsx` already has
-   HELCOM's geometry/volume/carbon columns filled in — we need an example of
-   what the Polish lab actually sends before any HELCOM join, to build and
-   validate against real input.
-2. **Which PEG_BVOL edition was each LMO occasion originally coded against?**
-   `from_year` above needs this per occasion (or per year of sampling) to
-   know how far back to replay the change log.
-3. **Emil's old change log/code, if findable** — though PEG_BVOL2026.xlsx's
-   own `Change log` sheet already goes back to 2006 in structured form, so it
-   may cover everything needed without it. Worth confirming whether Emil's
-   file is the same thing or contains anything beyond what's already here.
-4. **How to handle names PEG_BVOL hasn't adopted**, like Leubordinium above —
-   is there a list of these already, or do they need to be found and mapped
-   case by case as they come up?
+1. ~~A genuine raw (pre-join) LMO count file~~ — resolved: `LMO_378.xlsx`'s
+   `Species`/`SizeClassNo`/`Abundance` columns are exactly that.
+2. ~~Which PEG_BVOL edition was each LMO occasion originally coded
+   against?~~ — resolved, and turns out not to matter: since HELCOM's
+   renames are backwards-compatible, replaying the full change log is
+   always safe regardless of the file's original vintage (see "The problem
+   this solves" above). `from_year` has been removed from the script.
+3. **Emil's old data file, once it arrives** — Carolin doesn't have his
+   code, but does have a file with all LMO phytoplankton data adjusted to
+   PEG_BVOL_2020, which she's attempting to send. Once here, worth checking
+   whether it's useful as a second, independent validation set (e.g. do our
+   remap results for the same occasions agree with what he produced
+   manually) rather than as a source of additional changelog logic — the
+   change log already goes back to 2006 in structured form.
+4. Confirmed resolved, no open question remains: names PEG_BVOL hasn't
+   adopted, and bare-genus rows with missing size classes, both get flagged
+   for manual review rather than auto-resolved (see "Known limitations").
